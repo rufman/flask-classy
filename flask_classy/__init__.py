@@ -16,6 +16,13 @@ import inspect
 from werkzeug.routing import parse_rule
 from flask import request, Response, make_response
 import re
+from .utils import unpack
+
+try:
+    #noinspection PyUnresolvedReferences
+    from collections import OrderedDict
+except ImportError:
+    from .utils.ordereddict import OrderedDict
 
 _temp_rule_cache = None
 _py2 = sys.version_info[0] == 2
@@ -308,7 +315,63 @@ class DecoratorCompatibilityError(Exception):
     pass
 
 
+def marshal(data, fields):
+    """Takes raw data (in the form of a dict, list, object) and a dict of
+    fields to output and filters the data based on those fields.
+
+    :param fields: a dict of whose keys will make up the final serialized
+                   response output
+    :param data: the actual object(s) from which the fields are taken from
 
 
+    >>> from flask.ext.restful import fields, marshal
+    >>> data = { 'a': 100, 'b': 'foo' }
+    >>> mfields = { 'a': fields.Raw }
+
+    >>> marshal(data, mfields)
+    OrderedDict([('a', 100)])
+
+    """
+    def make(cls):
+        if isinstance(cls, type):
+            return cls()
+        return cls
+
+    if isinstance(data, (list, tuple)):
+        return [marshal(d, fields) for d in data]
+
+    items = ((k, marshal(data, v) if isinstance(v, dict)
+                                  else make(v).output(k, data))
+                                  for k, v in fields.items())
+    return OrderedDict(items)
 
 
+class marshal_with(object):
+    """A decorator that apply marshalling to the return values of your methods.
+
+    >>> from flask.ext.restful import fields, marshal_with
+    >>> mfields = { 'a': fields.Raw }
+    >>> @marshal_with(mfields)
+    ... def get():
+    ...     return { 'a': 100, 'b': 'foo' }
+    ...
+    ...
+    >>> get()
+    OrderedDict([('a', 100)])
+
+    """
+    def __init__(self, fields):
+        """:param fields: a dict of whose keys will make up the final
+                          serialized response output"""
+        self.fields = fields
+
+    def __call__(self, f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            response = f(*args, **kwargs)
+            if isinstance(response, tuple):
+                data, code, headers = unpack(response)
+                return marshal(data, self.fields), code, headers
+            else:
+                return marshal(response, self.fields)
+        return wrapper
